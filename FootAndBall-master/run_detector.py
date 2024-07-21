@@ -18,25 +18,38 @@ from data.augmentation import PLAYER_LABEL, BALL_LABEL
 
 
 def draw_bboxes(image, detections):
+    """
+    Function to draw boxes on the image and to collect coordinates of the detected players and the ball 
+    """
+
+    player_boxes = []
+    ball_position = None
+
     font = cv2.FONT_HERSHEY_SIMPLEX
     for box, label, score in zip(detections['boxes'], detections['labels'], detections['scores']):
         if label == PLAYER_LABEL:
             x1, y1, x2, y2 = box
+            player_boxes.append((x1, y1, x2, y2, score))
             color = (255, 0, 0)
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
             cv2.putText(image, '{:0.2f}'.format(score), (int(x1), max(0, int(y1)-10)), font, 1, color, 2)
 
         elif label == BALL_LABEL:
             x1, y1, x2, y2 = box
+            ball_position = (int((x1 + x2) / 2), int((y1 + y2) / 2), score)
             x = int((x1 + x2) / 2)
             y = int((y1 + y2) / 2)
             color = (0, 0, 255)
             radius = 25
-            cv2.circle(image, (int(x), int(y)), radius, color, 2)
-            cv2.putText(image, '{:0.2f}'.format(score), (max(0, int(x - radius)), max(0, (y - radius - 10))), font, 1,
-                        color, 2)
+            # cv2.circle(image, (int(x), int(y)), radius, color, 2)
+            cv2.circle(image, ball_position[:2], radius, color, 2)
+            # cv2.putText(image, '{:0.2f}'.format(score), (max(0, int(x - radius)), max(0, (y - radius - 10))), font, 1,
+            #             color, 2)
+            cv2.putText(image, '{:0.2f}'.format(score), (max(0, ball_position[0] - radius), max(0, (ball_position[1] - radius - 10))), font, 1, color, 2)
 
-    return image
+
+    # return image
+    return image, player_boxes, ball_position
 
 
 def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
@@ -66,6 +79,10 @@ def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
 
     print('Processing video: {}'.format(args.path))
     pbar = tqdm.tqdm(total=n_frames)
+
+    player_coordinates = []
+    ball_coordinates = []
+
     while sequence.isOpened():
         ret, frame = sequence.read()
         if not ret:
@@ -80,13 +97,20 @@ def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
             img_tensor = img_tensor.unsqueeze(dim=0).to(args.device)
             detections = model(img_tensor)[0]
 
-        frame = draw_bboxes(frame, detections)
+        # frame = draw_bboxes(frame, detections)
+        frame, players, ball = draw_bboxes(frame, detections)
         out_sequence.write(frame)
         pbar.update(1)
+
+        player_coordinates.append(players)
+        if ball: 
+            ball_coordinates.append(ball)
 
     pbar.close()
     sequence.release()
     out_sequence.release()
+
+    return player_coordinates, ball_coordinates
 
 
 if __name__ == '__main__':
@@ -120,5 +144,14 @@ if __name__ == '__main__':
     model = footandball.model_factory(args.model, 'detect', ball_threshold=args.ball_threshold,
                                       player_threshold=args.player_threshold)
 
-    run_detector(model, args)
+    player_coords, ball_coords = run_detector(model, args)
 
+    print("Detected players coordinates:")
+    for frame_idx, frame_players in enumerate(player_coords):
+        print(f"Frame {frame_idx}:")
+        for player in frame_players:
+            print(f"  Player box: {player[:4]}, Score: {player[4]}")
+
+    print("Detected ball coordinates:")
+    for frame_idx, ball in enumerate(ball_coords):
+        print(f"Frame {frame_idx}: Ball position: {ball[:2]}, Score: {ball[2]}")
