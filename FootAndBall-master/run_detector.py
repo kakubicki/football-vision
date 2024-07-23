@@ -1,21 +1,18 @@
-# FootAndBall: Integrated Player and Ball Detector
-# Jacek Komorowski, Grzegorz Kurzejamski, Grzegorz Sarwas
-# Copyright (c) 2020 Sport Algorithmics and Gaming
-
-#
-# Run FootAndBall detector on ISSIA-CNR Soccer videos
-#
-
 import torch
 import cv2
 import os
 import argparse
 import tqdm
+import numpy as np 
 
 import network.footandball as footandball
 import data.augmentation as augmentations
 from data.augmentation import PLAYER_LABEL, BALL_LABEL
 
+# Define HSV color ranges for team colors
+TEAM1_COLOR_RANGE = ((100, 150, 0), (140, 255, 255)) # Example HSV range for Team 1 (e.g., green)
+TEAM2_COLOR_RANGE = ((0, 0, 200), (180, 55, 255))  # Example HSV range for Team 2 (e.g., red)
+WHITE_PIXEL_THRESHOLD = 500  # Example threshold for determining team
 
 def draw_bboxes(image, detections):
     """
@@ -24,8 +21,8 @@ def draw_bboxes(image, detections):
 
     player_boxes = []
     ball_position = None
-
     font = cv2.FONT_HERSHEY_SIMPLEX
+
     for box, label, score in zip(detections['boxes'], detections['labels'], detections['scores']):
         if label == PLAYER_LABEL:
             x1, y1, x2, y2 = box
@@ -51,6 +48,57 @@ def draw_bboxes(image, detections):
     # return image
     return image, player_boxes, ball_position
 
+
+def calculate_distance(point1, point2):
+    return np.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
+
+
+def create_color_mask(image, color_range):
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv_image, color_range[0], color_range[1])
+    return mask
+
+
+def determine_team(image, box):
+    x1, y1, x2, y2 = map(int, box[:4])
+    player_region = image[y1:y2, x1:x2]
+
+    mask_team1 = create_color_mask(player_region, TEAM1_COLOR_RANGE)
+    mask_team2 = create_color_mask(player_region, TEAM2_COLOR_RANGE)
+
+    white_pixels_team1 = cv2.countNonZero(mask_team1)
+    white_pixels_team2 = cv2.countNonZero(mask_team2)
+
+    if white_pixels_team1 > WHITE_PIXEL_THRESHOLD:
+        return 'team1'
+    elif white_pixels_team2 > WHITE_PIXEL_THRESHOLD:
+        return 'team2'
+    else:
+        return 'unknown'
+    
+
+def determine_possession(image, ball_position, player_boxes):
+    if ball_position is None or not player_boxes:
+        return None
+
+    min_distance = float('inf')
+    closest_player = None
+
+    for player in player_boxes:
+        x1, y1, x2, y2, score = player
+        player_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+        distance = calculate_distance(ball_position[:2], player_center)
+
+        if distance < min_distance:
+            min_distance = distance
+            closest_player = player
+
+    if closest_player:
+        team = determine_team(image, closest_player)
+        return team
+
+    return None
+    
 
 def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
     model.print_summary(show_architecture=False)
@@ -82,6 +130,7 @@ def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
 
     player_coordinates = []
     ball_coordinates = []
+    possessions = []
 
     while sequence.isOpened():
         ret, frame = sequence.read()
@@ -103,14 +152,29 @@ def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
         pbar.update(1)
 
         player_coordinates.append(players)
-        if ball: 
-            ball_coordinates.append(ball)
+        # if ball: 
+        #     ball_coordinates.append(ball)
+
+        # if ball:
+        #     ball_coordinates.append(ball)
+        #     possession = determine_possession(frame, ball, players)
+        #     possessions.append(possession)
+
+        if ball:
+            # Convert ball position to a tuple of floats (if ball is detected)
+            ball_cpu = (float(ball[0]), float(ball[1]))
+            # Convert player boxes to a list of tuples of floats
+            players_cpu = [(float(player[0]), float(player[1]), float(player[2]), float(player[3]), float(player[4])) for player in players]
+
+
+            possession = determine_possession(frame, ball_cpu, players_cpu)
+            possessions.append(possession)
 
     pbar.close()
     sequence.release()
     out_sequence.release()
 
-    return player_coordinates, ball_coordinates
+    return player_coordinates, ball_coordinates, possessions
 
 
 if __name__ == '__main__':
@@ -144,7 +208,7 @@ if __name__ == '__main__':
     model = footandball.model_factory(args.model, 'detect', ball_threshold=args.ball_threshold,
                                       player_threshold=args.player_threshold)
 
-    player_coords, ball_coords = run_detector(model, args)
+    player_coords, ball_coords, possessions = run_detector(model, args)
 
     print("Detected players coordinates:")
     for frame_idx, frame_players in enumerate(player_coords):
@@ -155,3 +219,10 @@ if __name__ == '__main__':
     print("Detected ball coordinates:")
     for frame_idx, ball in enumerate(ball_coords):
         print(f"Frame {frame_idx}: Ball position: {ball[:2]}, Score: {ball[2]}")
+
+    print("Ball possession per frame:")
+    for frame_idx, possession in enumerate(possessions):
+        if possession:
+            print(f"Frame {frame_idx}: Team in possession: {possession}")
+        else:
+            print(f"Frame {frame_idx}: No possession detected")
