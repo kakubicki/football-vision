@@ -161,6 +161,7 @@ def run_detector(model: footandball.FootAndBall, args: argparse.Namespace):
         #     possessions.append(possession)
 
         if ball:
+            ball_coordinates.append(ball)
             # Convert ball position to a tuple of floats (if ball is detected)
             ball_cpu = (float(ball[0]), float(ball[1]))
             # Convert player boxes to a list of tuples of floats
